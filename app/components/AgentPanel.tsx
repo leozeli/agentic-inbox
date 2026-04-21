@@ -298,7 +298,7 @@ function AgentChatConnected({
 	useChat,
 }: {
 	mailboxId: string;
-	useChat: typeof import("ai/react").useChat;
+	useChat: typeof import("@ai-sdk/react").useChat;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -527,20 +527,20 @@ function AgentChatConnected({
 export default function AgentPanel() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const [hooks, setHooks] = useState<{
-		useChat: typeof import("ai/react").useChat;
+		useChat: typeof import("@ai-sdk/react").useChat;
 	} | null>(null);
 
 	const [loadError, setLoadError] = useState<string | null>(null);
 
 	useEffect(() => {
-		import("ai/react")
+		import("@ai-sdk/react")
 			.then((mod) =>
 				setHooks({
 					useChat: mod.useChat,
 				}),
 			)
 			.catch((err) => {
-				console.error("Failed to load ai/react:", err);
+				console.error("Failed to load @ai-sdk/react:", err);
 				setLoadError("Failed to connect to agent. Reload to retry.");
 			});
 	}, []);
