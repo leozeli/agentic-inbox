@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/workers ./workers
+COPY --from=builder /app/shared ./shared
 COPY --from=builder /app/package.json ./
 
 RUN mkdir -p data/mailboxes data/storage/mailboxes data/storage/attachments
