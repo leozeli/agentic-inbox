@@ -2,7 +2,14 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-export interface Env extends Cloudflare.Env {
-	POLICY_AUD: string;
-	TEAM_DOMAIN: string;
+export interface Env {
+	OPENAI_API_KEY: string;
+	OPENAI_MODEL?: string;
+	SMTP_HOST?: string;       // for sending email
+	SMTP_PORT?: string;
+	SMTP_USER?: string;
+	SMTP_PASS?: string;
+	SMTP_FROM?: string;
+	DOMAINS?: string;         // comma-separated, for email routing
+	EMAIL_ADDRESSES?: string[];
 }

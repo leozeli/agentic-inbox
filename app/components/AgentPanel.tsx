@@ -295,22 +295,23 @@ function MessageBubble({
 
 function AgentChatConnected({
 	mailboxId,
-	useAgent,
-	useAgentChat,
+	useChat,
 }: {
 	mailboxId: string;
-	useAgent: typeof import("agents/react").useAgent;
-	useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;
+	useChat: typeof import("ai/react").useChat;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const [inputValue, setInputValue] = useState("");
 	const { startCompose } = useUIStore();
 
-	const agent = useAgent({ agent: "EmailAgent", name: mailboxId });
-	const { messages, sendMessage, status, setMessages, stop } =
-		useAgentChat({ agent });
+	const { messages, status, stop, append } =
+		useChat({ api: `/api/agents/${mailboxId}/chat`, id: mailboxId });
 	const isStreaming = status === "streaming" || status === "submitted";
+
+	const sendMessage = ({ text }: { text: string }) => {
+		append({ role: "user", content: text });
+	};
 
 	useEffect(() => {
 		const el = scrollRef.current;
@@ -363,7 +364,9 @@ function AgentChatConnected({
 								icon={<TrashIcon size={14} />}
 								onClick={() => {
 									if (window.confirm("Clear chat history?")) {
-										setMessages([]);
+										fetch(`/api/agents/${mailboxId}/messages`, { method: "DELETE" })
+											.catch(() => {})
+											.finally(() => window.location.reload());
 									}
 								}}
 								aria-label="Clear chat"
@@ -524,25 +527,22 @@ function AgentChatConnected({
 export default function AgentPanel() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const [hooks, setHooks] = useState<{
-		useAgent: typeof import("agents/react").useAgent;
-		useAgentChat: typeof import("@cloudflare/ai-chat/react").useAgentChat;
+		useChat: typeof import("ai/react").useChat;
 	} | null>(null);
 
 	const [loadError, setLoadError] = useState<string | null>(null);
 
 	useEffect(() => {
-		Promise.all([
-			import("agents/react"),
-			import("@cloudflare/ai-chat/react"),
-		]).then(([a, c]) =>
-			setHooks({
-				useAgent: a.useAgent,
-				useAgentChat: c.useAgentChat,
-			}),
-		).catch((err) => {
-			console.error("Failed to load agent modules:", err);
-			setLoadError("Failed to connect to agent. Reload to retry.");
-		});
+		import("ai/react")
+			.then((mod) =>
+				setHooks({
+					useChat: mod.useChat,
+				}),
+			)
+			.catch((err) => {
+				console.error("Failed to load ai/react:", err);
+				setLoadError("Failed to connect to agent. Reload to retry.");
+			});
 	}, []);
 
 	if (loadError) {
@@ -567,8 +567,7 @@ export default function AgentPanel() {
 	return (
 		<AgentChatConnected
 			mailboxId={mailboxId ?? "default"}
-			useAgent={hooks.useAgent}
-			useAgentChat={hooks.useAgentChat}
+			useChat={hooks.useChat}
 		/>
 	);
 }

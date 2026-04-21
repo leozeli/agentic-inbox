@@ -7,7 +7,11 @@ import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
 import { z } from "zod";
 import { sendEmail } from "./email-sender";
-import { storeAttachments, type StoredAttachment } from "./lib/attachments";
+import { storeAttachments, localStoragePut, localStorageGet, localStorageDelete, type StoredAttachment } from "./lib/attachments";
+import { MailboxDO } from "./durableObject";
+import { EmailAgent } from "./agent";
+import fs from "node:fs";
+import path from "node:path";
 import {
 	validateSender,
 	SenderValidationError,
@@ -95,7 +99,7 @@ app.get("/api/v1/config", (c) => {
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
-	const allMailboxes = await listMailboxes(c.env.BUCKET);
+	const allMailboxes = await listMailboxes();
 	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
 });
 
@@ -107,36 +111,36 @@ app.post("/api/v1/mailboxes", async (c) => {
 		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
 	}
 	const key = `mailboxes/${email}.json`;
-	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
+	if (fs.existsSync(path.join(process.cwd(), "data/storage", key))) return c.json({ error: "Mailbox already exists" }, 409);
 	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
 	const finalSettings = { ...defaultSettings, ...settings };
-	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
-	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
+	await localStoragePut(key, JSON.stringify(finalSettings));
+	const stub = new MailboxDO(email);
 	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
 });
 
 app.get("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	const obj = await localStorageGet(`mailboxes/${mailboxId}.json`);
 	if (!obj) return c.json({ error: "Not found" }, 404);
-	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: await obj.json() });
+	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings: JSON.parse(Buffer.from(await obj.arrayBuffer()).toString()) });
 });
 
 app.put("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const { settings } = (await c.req.json()) as { settings: Record<string, unknown> };
 	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.put(key, JSON.stringify(settings));
+	if (!fs.existsSync(path.join(process.cwd(), "data/storage", key))) return c.json({ error: "Not found" }, 404);
+	await localStoragePut(key, JSON.stringify(settings));
 	return c.json({ id: mailboxId, name: mailboxId, email: mailboxId, settings });
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	if (!fs.existsSync(path.join(process.cwd(), "data/storage", key))) return c.json({ error: "Not found" }, 404);
+	await localStorageDelete(key); // TODO: also delete mailbox DB and attachment files
 	return c.body(null, 204);
 });
 
@@ -182,7 +186,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const stub = c.var.mailboxStub;
 	const rateLimitError = await (stub as any).checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
-	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
+	const attachmentData = await storeAttachments(messageId, attachments);
 
 	await stub.createEmail(Folders.SENT, {
 		id: messageId, subject, sender: fromEmail, recipient: toStr,
@@ -202,7 +206,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	}, attachmentData);
 
 	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+		sendEmail(c.env, {
 			to, cc, bcc, from, subject, html, text,
 			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
 			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
@@ -245,7 +249,7 @@ app.delete("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
 	const id = c.req.param("id")!;
 	const attachments = await c.var.mailboxStub.deleteEmail(id);
 	if (attachments === null) return c.json({ error: "Not found" }, 404);
-	if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((att: any) => `attachments/${id}/${att.id}/${att.filename}`));
+	if (attachments.length > 0) await Promise.all(attachments.map((att: any) => localStorageDelete(`attachments/${id}/${att.id}/${att.filename}`)));
 	return c.body(null, 204);
 });
 
@@ -316,13 +320,13 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	const attachmentId = c.req.param("attachmentId")!;
 	const attachment = await c.var.mailboxStub.getAttachment(attachmentId);
 	if (!attachment) return c.json({ error: "Attachment not found" }, 404);
-	const obj = await c.env.BUCKET.get(`attachments/${emailId}/${attachmentId}/${attachment.filename}`);
+	const obj = await localStorageGet(`attachments/${emailId}/${attachmentId}/${attachment.filename}`);
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
 	const headers = new Headers();
 	headers.set("Content-Type", attachment.mimetype);
 	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
 	headers.set("Content-Disposition", `attachment; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
-	return new Response(obj.body, { headers });
+	return new Response(await obj.arrayBuffer(), { headers });
 });
 
 // -- Receive inbound email ------------------------------------------
@@ -364,16 +368,16 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	if (!fs.existsSync(path.join(process.cwd(), "data/storage", `mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
 
-	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	const stub = new MailboxDO(mailboxId);
 
 	const attachmentData: StoredAttachment[] = [];
 	if (parsedEmail.attachments) {
 		for (const att of parsedEmail.attachments) {
 			const attId = crypto.randomUUID();
 			const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
+			await localStoragePut(`attachments/${messageId}/${attId}/${filename}`, att.content);
 			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
 				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
 				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
@@ -402,11 +406,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	const agent = new EmailAgent(env, mailboxId);
+	ctx.waitUntil(
+		agent.handleNewEmail({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId })
+			.catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message))
+	);
 }
 
 export { app, receiveEmail };

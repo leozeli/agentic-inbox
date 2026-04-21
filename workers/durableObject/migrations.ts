@@ -2,65 +2,54 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type Database from "better-sqlite3";
+
 export interface Migration {
 	name: string;
 	sql: string;
 }
 
 /**
- * Minimal migration runner that replaces workers-qb's DOQB.migrations().apply().
+ * Migration runner for better-sqlite3.
  *
- * Uses the `d1_migrations` tracking table for backward compatibility with
- * existing deployments that were managed by workers-qb. New deployments
- * create the same table so the schema is consistent either way.
+ * Tracks applied migrations in the `d1_migrations` table (name-based,
+ * keeping backward compatibility with the existing table name).
  */
 export function applyMigrations(
-	sql: SqlStorage,
+	db: Database.Database,
 	migrations: Migration[],
-	storage?: DurableObjectStorage,
 ): void {
-	sql.exec(`CREATE TABLE IF NOT EXISTS d1_migrations (
+	db.exec(`CREATE TABLE IF NOT EXISTS d1_migrations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL UNIQUE,
 		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`);
 
-	for (const migration of migrations) {
-		const applied = [
-			...sql.exec(
-				`SELECT 1 FROM d1_migrations WHERE name = ?`,
-				migration.name,
-			),
-		];
-		if (applied.length > 0) continue;
+	const checkApplied = db.prepare(
+		`SELECT 1 FROM d1_migrations WHERE name = ?`,
+	);
+	const recordApplied = db.prepare(
+		`INSERT INTO d1_migrations (name) VALUES (?)`,
+	);
 
-		// Strip any existing BEGIN/COMMIT wrapper from the migration SQL.
-		// Cloudflare's DO runtime forbids SQL-level transactions -- must use
-		// the JS storage.transactionSync() API instead.
+	for (const migration of migrations) {
+		const already = checkApplied.get(migration.name);
+		if (already) continue;
+
+		// Strip any existing BEGIN/COMMIT wrapper — better-sqlite3's
+		// db.transaction() handles atomicity instead.
 		let migrationSql = migration.sql.trim();
 		migrationSql = migrationSql.replace(/^\s*BEGIN\s+TRANSACTION\s*;?\s*/i, "");
 		migrationSql = migrationSql.replace(/\s*COMMIT\s*;?\s*$/i, "");
 
-		const escapedName = migration.name.replace(/'/g, "''");
-		const run = () => {
-			sql.exec(migrationSql);
-			sql.exec(
-				`INSERT INTO d1_migrations (name) VALUES ('${escapedName}')`,
-			);
-		};
+		const name = migration.name;
+		const run = db.transaction(() => {
+			db.exec(migrationSql);
+			recordApplied.run(name);
+		});
 
-		if (storage) {
-			// Preferred: atomic transaction via the DO JS API
-			storage.transactionSync(run);
-		} else {
-			// Fallback: run without explicit transaction (each exec is auto-committed)
-			run();
-		}
+		run();
 	}
-}
-
-interface DurableObjectStorage {
-	transactionSync: <T>(closure: () => T) => T;
 }
 
 /**
@@ -158,9 +147,8 @@ export const mailboxMigrations: Migration[] = [
         `),
 	},
 	{
-		// No txn() wrapper: Cloudflare's DO runtime requires state.storage.transactionSync()
-		// instead of SQL-level BEGIN TRANSACTION. These are idempotent CREATE INDEX IF NOT EXISTS
-		// statements so they're safe to run without a transaction.
+		// No txn() wrapper needed: these are idempotent CREATE INDEX IF NOT EXISTS
+		// statements that are safe to run without an explicit transaction.
 		name: "8_add_folder_date_indexes",
 		sql: `
             CREATE INDEX IF NOT EXISTS idx_emails_folder_id ON emails(folder_id);

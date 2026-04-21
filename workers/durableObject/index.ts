@@ -2,14 +2,21 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { DurableObject } from "cloudflare:workers";
-import { drizzle } from "drizzle-orm/durable-sqlite";
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import { eq, and, or, asc, desc, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
+import fs from "node:fs";
+import path from "node:path";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
-import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+
+function getDbPath(mailboxId: string): string {
+	const dir = path.join(process.cwd(), "data", "mailboxes");
+	fs.mkdirSync(dir, { recursive: true });
+	return path.join(dir, `${mailboxId}.db`);
+}
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -99,14 +106,15 @@ interface AttachmentData {
 	disposition?: string | null;
 }
 
-export class MailboxDO extends DurableObject<Env> {
-	declare __DURABLE_OBJECT_BRAND: never;
+export class MailboxDO {
 	db: ReturnType<typeof drizzle>;
+	private sqlite: Database.Database;
 
-	constructor(state: DurableObjectState, env: Env) {
-		super(state, env);
-		this.db = drizzle(this.ctx.storage, { schema });
-		applyMigrations(this.ctx.storage.sql, mailboxMigrations, this.ctx.storage);
+	constructor(private mailboxId: string) {
+		this.sqlite = new Database(getDbPath(mailboxId));
+		this.sqlite.pragma("journal_mode = WAL");
+		this.db = drizzle(this.sqlite, { schema });
+		applyMigrations(this.sqlite, mailboxMigrations);
 	}
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
@@ -198,12 +206,9 @@ export class MailboxDO extends DurableObject<Env> {
 
 		const where =
 			conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-		const row = [
-			...this.ctx.storage.sql.exec(
-				`SELECT COUNT(*) as total FROM emails ${where}`,
-				...params,
-			),
-		][0] as { total: number } | undefined;
+		const row = this.sqlite
+			.prepare(`SELECT COUNT(*) as total FROM emails ${where}`)
+			.get(...params) as { total: number } | undefined;
 
 		return row?.total ?? 0;
 	}
@@ -237,7 +242,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const isDraftFolder = folder === Folders.DRAFT;
 
 		if (isDraftFolder) {
-			const result = this.ctx.storage.sql.exec(
+			const rows = this.sqlite.prepare(
 				`WITH
 				folder_emails AS (
 					SELECT *,
@@ -274,10 +279,7 @@ export class MailboxDO extends DurableObject<Env> {
 				WHERE lp.rn = 1
 				ORDER BY lp.date DESC
 				LIMIT ?2 OFFSET ?3`,
-				folder, limit, offset
-			);
-
-			const rows = [...result];
+			).all(folder, limit, offset);
 			return rows.map((row: any) => ({
 				...row,
 				read: !!row.read,
@@ -289,7 +291,7 @@ export class MailboxDO extends DurableObject<Env> {
 		}
 
 		// Non-draft folders: full threading logic
-		const result = this.ctx.storage.sql.exec(
+		const rows = this.sqlite.prepare(
 			`WITH
 			folder_emails AS (
 				SELECT *,
@@ -369,10 +371,7 @@ export class MailboxDO extends DurableObject<Env> {
 			WHERE lif.rn = 1
 			ORDER BY lif.date DESC
 			LIMIT ?2 OFFSET ?3`,
-			folder, limit, offset
-		);
-
-		const rows = [...result];
+		).all(folder, limit, offset);
 		return rows.map((row: any) => ({
 			...row,
 			read: !!row.read,
@@ -393,44 +392,38 @@ export class MailboxDO extends DurableObject<Env> {
 		const isDraftFolder = folder === Folders.DRAFT;
 
 		if (isDraftFolder) {
-			const row = [
-				...this.ctx.storage.sql.exec(
-					`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
-					 FROM emails
-					 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)`,
-					folder,
-				),
-			][0] as { total: number } | undefined;
+			const row = this.sqlite.prepare(
+				`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
+				 FROM emails
+				 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)`,
+			).get(folder) as { total: number } | undefined;
 			return row?.total ?? 0;
 		}
 
-		const row = [
-			...this.ctx.storage.sql.exec(
-				`WITH
-				folder_emails AS (
-					SELECT
-						COALESCE(thread_id, id) as raw_thread_id,
-						thread_id,
-					${NORMALIZED_SUBJECT_SQL} as normalized_subject
-					FROM emails
-					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-				),
-				thread_to_conversation AS (
-					SELECT
-						raw_thread_id,
-						CASE
-							WHEN thread_id IS NOT NULL THEN raw_thread_id
-							WHEN normalized_subject != '' THEN MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
-							ELSE raw_thread_id
-						END as conversation_id
-					FROM folder_emails
-					GROUP BY raw_thread_id, normalized_subject, thread_id
-				)
-				SELECT COUNT(DISTINCT conversation_id) as total
-				FROM thread_to_conversation`,
-				folder,
+		const row = this.sqlite.prepare(
+			`WITH
+			folder_emails AS (
+				SELECT
+					COALESCE(thread_id, id) as raw_thread_id,
+					thread_id,
+				${NORMALIZED_SUBJECT_SQL} as normalized_subject
+				FROM emails
+				WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
 			),
-		][0] as { total: number } | undefined;
+			thread_to_conversation AS (
+				SELECT
+					raw_thread_id,
+					CASE
+						WHEN thread_id IS NOT NULL THEN raw_thread_id
+						WHEN normalized_subject != '' THEN MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
+						ELSE raw_thread_id
+					END as conversation_id
+				FROM folder_emails
+				GROUP BY raw_thread_id, normalized_subject, thread_id
+			)
+			SELECT COUNT(DISTINCT conversation_id) as total
+			FROM thread_to_conversation`,
+		).get(folder) as { total: number } | undefined;
 		return row?.total ?? 0;
 	}
 
@@ -465,12 +458,9 @@ export class MailboxDO extends DurableObject<Env> {
 	 * N+1 individual getEmail calls.
 	 */
 	async getThreadEmails(threadId: string) {
-		const emailRows = [
-			...this.ctx.storage.sql.exec(
-				`SELECT * FROM emails WHERE thread_id = ?1 ORDER BY date ASC`,
-				threadId,
-			),
-		] as any[];
+		const emailRows = this.sqlite.prepare(
+			`SELECT * FROM emails WHERE thread_id = ?1 ORDER BY date ASC`,
+		).all(threadId) as any[];
 
 		if (emailRows.length === 0) return [];
 
@@ -478,12 +468,9 @@ export class MailboxDO extends DurableObject<Env> {
 
 		// Batch-fetch all attachments for the thread in a single query
 		const placeholders = emailIds.map((_, i) => `?${i + 1}`).join(",");
-		const attachmentRows = [
-			...this.ctx.storage.sql.exec(
-				`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
-				...emailIds,
-			),
-		] as any[];
+		const attachmentRows = this.sqlite.prepare(
+			`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
+		).all(...emailIds) as any[];
 
 		// Group attachments by email_id
 		const attachmentsByEmail = new Map<string, any[]>();
@@ -527,10 +514,9 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	async markThreadRead(threadId: string) {
-		this.ctx.storage.sql.exec(
+		this.sqlite.prepare(
 			`UPDATE emails SET read = 1 WHERE thread_id = ? AND read = 0`,
-			threadId,
-		);
+		).run(threadId);
 		return { threadId, markedRead: true };
 	}
 
@@ -714,8 +700,8 @@ export class MailboxDO extends DurableObject<Env> {
 			ORDER BY e.date DESC LIMIT ?${params.length + 1} OFFSET ?${params.length + 2}`;
 		params.push(limit, offset);
 
-		const result = this.ctx.storage.sql.exec(query, ...params);
-		return [...result].map((row: any) => ({
+		const result = this.sqlite.prepare(query).all(...params);
+		return (result as any[]).map((row: any) => ({
 			...row,
 			read: !!row.read,
 			starred: !!row.starred,
@@ -731,7 +717,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 		const query = `SELECT COUNT(*) as total FROM emails ${where}`;
 
-		const row = [...this.ctx.storage.sql.exec(query, ...params)][0] as
+		const row = this.sqlite.prepare(query).get(...params) as
 			| { total: number }
 			| undefined;
 		return row?.total ?? 0;
@@ -747,7 +733,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (!normalized) return null;
 
-		const result = this.ctx.storage.sql.exec(
+		const result = this.sqlite.prepare(
 			`SELECT thread_id, subject,
 			        GROUP_CONCAT(DISTINCT LOWER(sender)) as senders,
 			        GROUP_CONCAT(DISTINCT LOWER(recipient)) as recipients
@@ -758,7 +744,7 @@ export class MailboxDO extends DurableObject<Env> {
 			 GROUP BY thread_id
 			 ORDER BY MAX(date) DESC
 			 LIMIT 50`,
-		);
+		).all() as any[];
 
 		const normalizedSender = senderAddress?.toLowerCase().trim();
 
@@ -791,23 +777,21 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Returns null if under limit, or an error message string if exceeded.
 	 */
 	async checkSendRateLimit(): Promise<string | null> {
-		const hourRow = [...this.ctx.storage.sql.exec(
+		const hourRow = this.sqlite.prepare(
 			`SELECT COUNT(*) as cnt FROM emails
 			 WHERE folder_id = ?1
 			   AND date >= datetime('now', '-1 hour')`,
-			Folders.SENT,
-		)][0] as { cnt: number } | undefined;
+		).get(Folders.SENT) as { cnt: number } | undefined;
 
 		if ((hourRow?.cnt ?? 0) >= 20) {
 			return "Rate limit exceeded: max 20 emails per hour per mailbox";
 		}
 
-		const dayRow = [...this.ctx.storage.sql.exec(
+		const dayRow = this.sqlite.prepare(
 			`SELECT COUNT(*) as cnt FROM emails
 			 WHERE folder_id = ?1
 			   AND date >= datetime('now', '-1 day')`,
-			Folders.SENT,
-		)][0] as { cnt: number } | undefined;
+		).get(Folders.SENT) as { cnt: number } | undefined;
 
 		if ((dayRow?.cnt ?? 0) >= 100) {
 			return "Rate limit exceeded: max 100 emails per day per mailbox";

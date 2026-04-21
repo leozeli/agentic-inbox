@@ -46,7 +46,7 @@ type RateLimitStub = {
 // ── list_mailboxes ─────────────────────────────────────────────────
 
 export async function toolListMailboxes(env: Env) {
-	return listMailboxes(env.BUCKET);
+	return listMailboxes();
 }
 
 // ── list_emails ────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ export async function toolDraftReply(
 	// Verify/sanitize if requested
 	let processedBody = params.body.trim();
 	if (params.runVerifyDraft) {
-		const sanitized = await verifyDraft(env.AI, processedBody);
+		const sanitized = await verifyDraft({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL || "gpt-4o-mini" }, processedBody);
 		if (!sanitized) {
 			return { error: "Draft verification failed — body could not be verified. Please try again." };
 		}
@@ -217,7 +217,7 @@ export async function toolDraftEmail(
 
 	let processedBody = params.body.trim();
 	if (params.runVerifyDraft) {
-		const sanitized = await verifyDraft(env.AI, processedBody);
+		const sanitized = await verifyDraft({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL || "gpt-4o-mini" }, processedBody);
 		if (!sanitized) {
 			return { error: "Draft verification failed — body could not be verified. Please try again." };
 		}
@@ -294,7 +294,7 @@ export async function toolUpdateDraft(
 	// Verify the body BEFORE deleting the old draft to prevent data loss
 	const newDraftId = crypto.randomUUID();
 	const rawBody = params.bodyHtml ?? oldDraft.body ?? "";
-	const verifiedBody = await verifyDraft(env.AI, rawBody);
+	const verifiedBody = await verifyDraft({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL || "gpt-4o-mini" }, rawBody);
 
 	if (!verifiedBody) {
 		return { error: "Draft verification failed — keeping existing draft unchanged. Please try again." };
@@ -422,7 +422,7 @@ export async function toolSendReply(
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 
 	// Verify and append quoted original message
-	const sanitizedBody = await verifyDraft(env.AI, params.bodyHtml);
+	const sanitizedBody = await verifyDraft({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL || "gpt-4o-mini" }, params.bodyHtml);
 	if (!sanitizedBody) {
 		return { error: "Draft verification failed — refusing to send unverified content. Please try again." };
 	}
@@ -434,7 +434,7 @@ export async function toolSendReply(
 	const fullBodyHtml = sanitizedBody + quotedBlock;
 
 	try {
-		await sendEmail(env.EMAIL, {
+		await sendEmail(env, {
 			to: params.to,
 			from: mailboxId,
 			subject: params.subject,
@@ -493,13 +493,13 @@ export async function toolSendEmail(
 	if (!fromDomain) throw new Error("Invalid mailbox email address");
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 
-	const sanitizedBody = await verifyDraft(env.AI, params.bodyHtml);
+	const sanitizedBody = await verifyDraft({ apiKey: env.OPENAI_API_KEY, model: env.OPENAI_MODEL || "gpt-4o-mini" }, params.bodyHtml);
 	if (!sanitizedBody) {
 		return { error: "Draft verification failed — refusing to send unverified content. Please try again." };
 	}
 
 	try {
-		await sendEmail(env.EMAIL, {
+		await sendEmail(env, {
 			to: params.to,
 			from: mailboxId,
 			subject: params.subject,

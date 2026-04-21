@@ -2,15 +2,17 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { AIChatAgent } from "@cloudflare/ai-chat";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
 	streamText,
 	generateText,
 	convertToModelMessages,
 	stepCountIs,
 } from "ai";
-import { createWorkersAI } from "workers-ai-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
+import type { UIMessage } from "ai";
 import type { EmailFull, EmailMetadata } from "../lib/schemas";
 import { verifyDraft, isPromptInjection } from "../lib/ai";
 import {
@@ -88,23 +90,29 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
 
 /**
- * Fetch the custom system prompt for a mailbox from its R2 settings.
+ * Fetch the custom system prompt for a mailbox from local filesystem settings.
  * Falls back to DEFAULT_SYSTEM_PROMPT if none is configured.
  */
-async function getSystemPrompt(env: Env, mailboxId: string): Promise<string> {
+function getSystemPrompt(mailboxId: string): string {
 	try {
-		const key = `mailboxes/${mailboxId}.json`;
-		const obj = await env.BUCKET.get(key);
-		if (obj) {
-			const settings = await obj.json<Record<string, unknown>>();
-			if (typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()) {
-				return settings.agentSystemPrompt;
-			}
+		const filePath = path.join("data", "storage", "mailboxes", `${mailboxId}.json`);
+		const raw = fs.readFileSync(filePath, "utf-8");
+		const settings = JSON.parse(raw) as Record<string, unknown>;
+		if (typeof settings.agentSystemPrompt === "string" && settings.agentSystemPrompt.trim()) {
+			return settings.agentSystemPrompt;
 		}
 	} catch {
 		// Fall through to default
 	}
 	return DEFAULT_SYSTEM_PROMPT;
+}
+
+const AGENTS_DIR = path.join("data", "agents");
+
+function ensureAgentsDir(): void {
+	if (!fs.existsSync(AGENTS_DIR)) {
+		fs.mkdirSync(AGENTS_DIR, { recursive: true });
+	}
 }
 
 function createEmailTools(env: Env, mailboxId: string) {
@@ -269,57 +277,45 @@ function createEmailTools(env: Env, mailboxId: string) {
 	};
 }
 
-// Use `any` for the Env generic to avoid type conflicts between the custom
-// SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
-// is fully typed inside the tools via the closure.
-export class EmailAgent extends AIChatAgent<any> {
-	async onChatMessage(onFinish: any) {
-		const env = this.env as Env;
-		const mailboxId = this.name;
-		const workersai = createWorkersAI({ binding: env.AI });
-		const tools = createEmailTools(env, mailboxId);
-		const systemPrompt = await getSystemPrompt(env, mailboxId);
+export class EmailAgent {
+	constructor(private env: Env, private mailboxId: string) {}
 
-		const result = streamText({
-			model: workersai("@cf/moonshotai/kimi-k2.5"),
-			system: systemPrompt,
-			messages: await convertToModelMessages(this.messages),
-			tools,
-			stopWhen: stepCountIs(5),
-			onFinish,
-		});
-
-		return result.toUIMessageStreamResponse();
+	get messages(): UIMessage[] {
+		try {
+			ensureAgentsDir();
+			const filePath = path.join(AGENTS_DIR, `${this.mailboxId}.json`);
+			if (!fs.existsSync(filePath)) return [];
+			const raw = fs.readFileSync(filePath, "utf-8");
+			return JSON.parse(raw) as UIMessage[];
+		} catch {
+			return [];
+		}
 	}
 
-	/**
-	 * Handle HTTP requests to the agent DO. Intercepts /onNewEmail
-	 * before passing to the default AIChatAgent handler.
-	 */
-	async onRequest(request: Request): Promise<Response> {
-		const url = new URL(request.url);
-		if (url.pathname === "/onNewEmail" && request.method === "POST") {
-			try {
-				const emailData = await request.json() as {
-					mailboxId: string;
-					emailId: string;
-					sender: string;
-					subject: string;
-					threadId: string;
-				};
-				const result = await this.handleNewEmail(emailData);
-				return new Response(JSON.stringify(result), {
-					headers: { "Content-Type": "application/json" },
-				});
-			} catch (e) {
-				console.error("onNewEmail handler failed:", (e as Error).message);
-				return new Response(
-					JSON.stringify({ error: (e as Error).message }),
-					{ status: 500, headers: { "Content-Type": "application/json" } },
-				);
-			}
-		}
-		return super.onRequest(request);
+	async persistMessages(messages: UIMessage[]): Promise<void> {
+		ensureAgentsDir();
+		const filePath = path.join(AGENTS_DIR, `${this.mailboxId}.json`);
+		fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), "utf-8");
+	}
+
+	async onChatMessage(messages: UIMessage[]): Promise<Response> {
+		const env = this.env;
+		const mailboxId = this.mailboxId;
+		const apiKey = (env as any).OPENAI_API_KEY as string;
+		const modelName = (env as any).OPENAI_MODEL as string | undefined;
+		const openai = createOpenAI({ apiKey })(modelName || "gpt-4o-mini");
+		const tools = createEmailTools(env, mailboxId);
+		const systemPrompt = getSystemPrompt(mailboxId);
+
+		const result = streamText({
+			model: openai,
+			system: systemPrompt,
+			messages: await convertToModelMessages(messages),
+			tools,
+			stopWhen: stepCountIs(5),
+		});
+
+		return result.toDataStreamResponse();
 	}
 
 	/**
@@ -333,10 +329,13 @@ export class EmailAgent extends AIChatAgent<any> {
 		subject: string;
 		threadId: string;
 	}) {
-		const env = this.env as Env;
-		const workersai = createWorkersAI({ binding: env.AI });
+		const env = this.env;
+		const apiKey = (env as any).OPENAI_API_KEY as string;
+		const modelName = (env as any).OPENAI_MODEL as string | undefined;
+		const openai = createOpenAI({ apiKey })(modelName || "gpt-4o-mini");
+		const aiConfig = { apiKey, model: modelName || "gpt-4o-mini" };
 		const tools = createEmailTools(env, emailData.mailboxId);
-		const systemPrompt = await getSystemPrompt(env, emailData.mailboxId);
+		const systemPrompt = getSystemPrompt(emailData.mailboxId);
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
@@ -347,10 +346,10 @@ export class EmailAgent extends AIChatAgent<any> {
 		try {
 			const email = (await stub.getEmail(emailData.emailId)) as EmailFull | null;
 			if (email?.body) {
-				const isInjection = await isPromptInjection(env.AI, email.body);
+				const isInjection = await isPromptInjection(aiConfig, email.body);
 				if (isInjection) {
 					console.warn("Skipping auto-draft due to detected prompt injection:", emailData.emailId);
-					
+
 					// Log to agent chat so the user knows why it skipped
 					const newMessages = [
 						{
@@ -363,16 +362,16 @@ export class EmailAgent extends AIChatAgent<any> {
 						{
 							id: crypto.randomUUID(),
 							role: "assistant" as const,
-							content: "⚠️ Blocked auto-draft creation: the email appears to contain prompt injection or malicious instructions.",
+							content: "Blocked auto-draft creation: the email appears to contain prompt injection or malicious instructions.",
 							createdAt: new Date(),
-							parts: [{ type: "text" as const, text: "⚠️ Blocked auto-draft creation: the email appears to contain prompt injection or malicious instructions." }],
+							parts: [{ type: "text" as const, text: "Blocked auto-draft creation: the email appears to contain prompt injection or malicious instructions." }],
 						},
 					];
 					await this.persistMessages([...this.messages, ...newMessages]);
-					
+
 					return;
 				}
-				
+
 				emailBody = stripHtmlToText(email.body);
 			}
 
@@ -395,7 +394,7 @@ export class EmailAgent extends AIChatAgent<any> {
 			// could plant an injection in an earlier email in the thread
 			// that gets included in the agent's prompt.
 			if (threadContext) {
-				const threadInjection = await isPromptInjection(env.AI, threadContext);
+				const threadInjection = await isPromptInjection(aiConfig, threadContext);
 				if (threadInjection) {
 					console.warn("Skipping auto-draft due to prompt injection in thread context:", emailData.threadId);
 					const newMessages = [
@@ -463,7 +462,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai("@cf/moonshotai/kimi-k2.5"),
+				model: openai,
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,
@@ -478,7 +477,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 			if (!draftToolCalled && result.text.trim()) {
 				// Model generated a draft inline as text -- verify with AI
-				const sanitizedText = await verifyDraft(env.AI, result.text.trim());
+				const sanitizedText = await verifyDraft(aiConfig, result.text.trim());
 				if (!sanitizedText) {
 					// Inline text was entirely agent commentary, skip
 				} else {

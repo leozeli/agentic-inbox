@@ -17,3 +17,7 @@ opencode.jsonc
 skills-lock.json
 .DS_Store
 worker-configuration.d.ts
+data/
+.playwright-mcp/
+frontend-check.png
+frontend.png

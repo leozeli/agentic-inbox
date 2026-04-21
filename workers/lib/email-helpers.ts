@@ -8,11 +8,13 @@
  * Includes: DO stub helpers, sender validation, message-ID generation,
  * threading, HTML utilities, and tool-logic (getFullEmail / getFullThread).
  */
-import type { MailboxDO } from "../durableObject";
+import { MailboxDO } from "../durableObject";
 import type { EmailFull } from "./schemas";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { formatQuotedDate } from "../../shared/dates";
+import fs from "node:fs";
+import path from "node:path";
 
 // ── DO Stub ────────────────────────────────────────────────────────
 
@@ -21,12 +23,10 @@ import { formatQuotedDate } from "../../shared/dates";
  * Replaces the repeated 3-line ns.idFromName / ns.get pattern.
  */
 export function getMailboxStub(
-	env: Env,
+	_env: Env,
 	mailboxId: string,
-): DurableObjectStub<MailboxDO> {
-	const ns = env.MAILBOX;
-	const id = ns.idFromName(mailboxId);
-	return ns.get(id);
+): MailboxDO {
+	return new MailboxDO(mailboxId);
 }
 
 // ── Mailbox Listing ────────────────────────────────────────────────
@@ -35,13 +35,20 @@ export function getMailboxStub(
  * List all mailboxes from R2 bucket metadata.
  */
 export async function listMailboxes(
-	bucket: R2Bucket,
+	_bucket?: unknown,
 ): Promise<{ id: string; email: string }[]> {
-	const list = await bucket.list({ prefix: "mailboxes/" });
-	return list.objects.map((obj) => {
-		const id = obj.key.replace("mailboxes/", "").replace(".json", "");
-		return { id, email: id };
-	});
+	const dir = path.join(process.cwd(), "data", "storage", "mailboxes");
+	try {
+		const files = fs.readdirSync(dir);
+		return files
+			.filter((f) => f.endsWith(".json"))
+			.map((f) => {
+				const id = f.replace(".json", "");
+				return { id, email: id };
+			});
+	} catch {
+		return [];
+	}
 }
 
 // ── Sender Validation ──────────────────────────────────────────────
@@ -137,7 +144,7 @@ export function buildThreadingHeaders(
  * Used by reply/forward routes to avoid threading against the draft itself.
  */
 export async function resolveOriginalEmail(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: MailboxDO,
 	email: EmailFull,
 ): Promise<EmailFull> {
 	if (email.folder_id === Folders.DRAFT && email.in_reply_to) {
@@ -230,7 +237,7 @@ type MailboxThreadReaderStub = {
  * Returns null if the email is not found.
  */
 export async function getFullEmail(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: MailboxDO,
 	emailId: string,
 ) {
 	const email = (await stub.getEmail(emailId)) as EmailFull | null;
@@ -246,7 +253,7 @@ export async function getFullEmail(
  * instead of the previous N+1 pattern (1 list query + N getEmail calls).
  */
 export async function getFullThread(
-	stub: DurableObjectStub<MailboxDO>,
+	stub: MailboxDO,
 	threadId: string,
 ) {
 	const threadStub = stub as unknown as MailboxThreadReaderStub;

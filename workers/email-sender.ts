@@ -3,12 +3,18 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 /**
- * Email sending via Cloudflare Email Service binding.
+ * Email sending via nodemailer (SMTP).
  *
- * Uses the `send_email` Worker binding (`env.EMAIL.send()`) to send emails.
+ * Replaces the Cloudflare `send_email` Worker binding with a standard SMTP
+ * transport via nodemailer. Configure SMTP settings via environment variables.
  *
- * See: https://developers.cloudflare.com/email-service/api/send-emails/workers-api/
+ * CALLERS NOTE: All callers previously passed `env.EMAIL` (a CF binding) as
+ * the first argument. They now need to pass the full `env` object instead:
+ *   sendEmail(env.EMAIL, params)  →  sendEmail(env, params)
+ * Affected files: workers/index.ts, workers/lib/tools.ts, workers/routes/reply-forward.ts
  */
+
+import nodemailer from "nodemailer";
 
 export interface SendEmailParams {
 	to: string | string[];
@@ -30,43 +36,49 @@ export interface SendEmailParams {
 }
 
 /**
- * Send an email using the Cloudflare Email Service binding.
+ * Send an email using nodemailer SMTP transport.
  *
- * @param binding  - The `EMAIL` SendEmail binding from env
- * @param params   - Email parameters (to, from, subject, body, etc.)
+ * @param env    - Environment variables containing SMTP config
+ * @param params - Email parameters (to, from, subject, body, etc.)
  * @returns The send result with messageId
- * @throws On validation or delivery errors (error has `.code` property)
+ * @throws On validation or delivery errors
  */
 export async function sendEmail(
-	binding: SendEmail,
+	env: { SMTP_HOST?: string; SMTP_PORT?: string; SMTP_USER?: string; SMTP_PASS?: string; SMTP_FROM?: string },
 	params: SendEmailParams,
 ): Promise<{ messageId: string }> {
-	const message: Record<string, unknown> = {
-		to: params.to,
-		from: params.from,
+	const transporter = nodemailer.createTransport({
+		host: env.SMTP_HOST || "localhost",
+		port: parseInt(env.SMTP_PORT || "587"),
+		secure: false,
+		auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASS } : undefined,
+	});
+
+	const fromAddress = typeof params.from === "string"
+		? params.from
+		: `${params.from.name} <${params.from.email}>`;
+
+	const replyToAddress = params.replyTo
+		? (typeof params.replyTo === "string" ? params.replyTo : `${params.replyTo.name} <${params.replyTo.email}>`)
+		: undefined;
+
+	const result = await transporter.sendMail({
+		from: fromAddress,
+		to: Array.isArray(params.to) ? params.to.join(", ") : params.to,
 		subject: params.subject,
-	};
+		html: params.html,
+		text: params.text,
+		cc: Array.isArray(params.cc) ? params.cc.join(", ") : params.cc,
+		bcc: Array.isArray(params.bcc) ? params.bcc.join(", ") : params.bcc,
+		replyTo: replyToAddress,
+		headers: params.headers,
+		attachments: params.attachments?.map((a) => ({
+			filename: a.filename,
+			content: Buffer.from(a.content, "base64"),
+			contentType: a.type,
+			cid: a.contentId,
+		})),
+	});
 
-	if (params.html) message.html = params.html;
-	if (params.text) message.text = params.text;
-	if (params.cc) message.cc = params.cc;
-	if (params.bcc) message.bcc = params.bcc;
-	if (params.replyTo) message.replyTo = params.replyTo;
-
-	if (params.headers && Object.keys(params.headers).length > 0) {
-		message.headers = params.headers;
-	}
-
-	if (params.attachments && params.attachments.length > 0) {
-		message.attachments = params.attachments.map((att) => ({
-			content: att.content,
-			filename: att.filename,
-			type: att.type,
-			disposition: att.disposition,
-			...(att.contentId ? { contentId: att.contentId } : {}),
-		}));
-	}
-
-	const result = await binding.send(message as any);
 	return { messageId: result.messageId };
 }
