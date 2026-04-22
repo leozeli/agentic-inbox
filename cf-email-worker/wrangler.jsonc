@@ -1,0 +1,9 @@
+{
+  "name": "agentic-inbox-email-router",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-11-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "VPS_URL": "https://your-vps-domain.com"
+  }
+}

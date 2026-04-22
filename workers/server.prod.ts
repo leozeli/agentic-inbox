@@ -14,7 +14,7 @@ import { createRequestHandler } from "react-router";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import { app as apiApp } from "./index";
+import { app as apiApp, receiveEmail } from "./index";
 import { handleMcpRequest } from "./mcp";
 import { EmailAgent } from "./agent";
 import type { Env } from "./types";
@@ -75,6 +75,41 @@ server.delete("/api/agents/:mailboxId/messages", async (c) => {
 	const agent = new EmailAgent(c.env as Env, mailboxId);
 	await agent.persistMessages([]);
 	return c.json({ ok: true });
+});
+
+// Inbound email webhook — called by Cloudflare Email Routing Worker
+// Expects: Authorization: Bearer <INBOUND_SECRET>
+// Body: raw MIME email (application/octet-stream or message/rfc822)
+server.post("/api/inbound-email", async (c) => {
+	const runtimeEnv = c.env as Env;
+	const secret = runtimeEnv.INBOUND_SECRET;
+	if (secret) {
+		const auth = c.req.header("Authorization") ?? "";
+		const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+		if (token !== secret) return c.json({ error: "Unauthorized" }, 401);
+	}
+	const raw = await c.req.arrayBuffer();
+	if (!raw.byteLength) return c.json({ error: "Empty body" }, 400);
+	const stream = new ReadableStream({
+		start(controller) {
+			controller.enqueue(new Uint8Array(raw));
+			controller.close();
+		},
+	});
+	// ExecutionContext shim: waitUntil runs the promise in background
+	const promises: Promise<unknown>[] = [];
+	const ctx = {
+		waitUntil: (p: Promise<unknown>) => { promises.push(p); },
+		passThroughOnException: () => {},
+	};
+	try {
+		await receiveEmail({ raw: stream, rawSize: raw.byteLength }, runtimeEnv, ctx as unknown as ExecutionContext);
+		await Promise.allSettled(promises);
+		return c.json({ ok: true });
+	} catch (e) {
+		console.error("inbound-email error:", (e as Error).message);
+		return c.json({ error: (e as Error).message }, 500);
+	}
 });
 
 server.route("/", apiApp);
