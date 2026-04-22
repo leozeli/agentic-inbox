@@ -85,6 +85,16 @@ app.use("/api/*", cors({
 		return undefined;
 	},
 }));
+// App-level password — protects all mailbox routes when APP_PASSWORD is set
+app.use("/api/v1/mailboxes/*", async (c, next) => {
+	const cfg = readSystemConfig();
+	const password = cfg.APP_PASSWORD ?? c.env.APP_PASSWORD;
+	if (!password) return next();
+	const auth = c.req.header("Authorization");
+	if (auth !== `Bearer ${password}`) return c.json({ error: "Unauthorized" }, 401);
+	return next();
+});
+
 app.use("/api/v1/mailboxes/:mailboxId/*", requireMailbox);
 
 // -- Config ---------------------------------------------------------
@@ -94,6 +104,70 @@ app.get("/api/v1/config", (c) => {
 	const domains = domainsRaw.split(",").map((d) => d.trim()).filter(Boolean);
 	const emailAddresses = c.env.EMAIL_ADDRESSES ?? [];
 	return c.json({ domains, emailAddresses });
+});
+
+// -- Admin ----------------------------------------------------------
+
+const SYSTEM_CONFIG_PATH = path.join(process.cwd(), "data", "system-config.json");
+
+function readSystemConfig(): Record<string, string> {
+	try { return JSON.parse(fs.readFileSync(SYSTEM_CONFIG_PATH, "utf8")); } catch { return {}; }
+}
+
+app.use("/api/v1/admin/*", async (c, next) => {
+	const cfg = readSystemConfig();
+	const token = cfg.ADMIN_TOKEN ?? c.env.ADMIN_TOKEN;
+	if (!token) return next();
+	const auth = c.req.header("Authorization");
+	if (auth !== `Bearer ${token}`) return c.json({ error: "Unauthorized" }, 401);
+	return next();
+});
+
+app.get("/api/v1/admin/stats", async (c) => {
+	const mailboxes = await listMailboxes();
+	const stats = mailboxes.map((m) => {
+		const stub = new MailboxDO(m.email);
+		return { email: m.email, ...stub.getStats() };
+	});
+	return c.json({
+		totalMailboxes: mailboxes.length,
+		totalEmails: stats.reduce((s, m) => s + m.total, 0),
+		totalUnread: stats.reduce((s, m) => s + m.unread, 0),
+		mailboxes: stats,
+	});
+});
+
+app.get("/api/v1/admin/system", (c) => {
+	const cfg = readSystemConfig();
+	return c.json({
+		smtpHost: cfg.SMTP_HOST ?? c.env.SMTP_HOST ?? "",
+		smtpPort: cfg.SMTP_PORT ?? c.env.SMTP_PORT ?? "587",
+		smtpUser: cfg.SMTP_USER ?? c.env.SMTP_USER ?? "",
+		smtpFrom: cfg.SMTP_FROM ?? c.env.SMTP_FROM ?? "",
+		smtpPassSet: !!(cfg.SMTP_PASS ?? c.env.SMTP_PASS),
+		domains: cfg.DOMAINS ?? c.env.DOMAINS ?? "",
+		openaiModel: cfg.OPENAI_MODEL ?? c.env.OPENAI_MODEL ?? "gpt-4o-mini",
+		appPasswordSet: !!(cfg.APP_PASSWORD ?? c.env.APP_PASSWORD),
+		adminTokenSet: !!(cfg.ADMIN_TOKEN ?? c.env.ADMIN_TOKEN),
+		tgBotTokenSet: !!(cfg.TG_BOT_TOKEN ?? c.env.TG_BOT_TOKEN),
+	});
+});
+
+app.put("/api/v1/admin/system", async (c) => {
+	const body = (await c.req.json()) as Record<string, string>;
+	const cfg = readSystemConfig();
+	const map: Record<string, string> = {
+		smtpHost: "SMTP_HOST", smtpPort: "SMTP_PORT", smtpUser: "SMTP_USER",
+		smtpFrom: "SMTP_FROM", smtpPass: "SMTP_PASS", domains: "DOMAINS",
+		openaiModel: "OPENAI_MODEL", appPassword: "APP_PASSWORD", adminToken: "ADMIN_TOKEN", tgBotToken: "TG_BOT_TOKEN",
+	};
+	for (const [k, envKey] of Object.entries(map)) {
+		if (body[k] !== undefined && body[k] !== "") cfg[envKey] = body[k];
+	}
+	fs.mkdirSync(path.dirname(SYSTEM_CONFIG_PATH), { recursive: true });
+	fs.writeFileSync(SYSTEM_CONFIG_PATH, JSON.stringify(cfg, null, 2));
+	Object.assign(c.env, cfg);
+	return c.json({ ok: true });
 });
 
 // -- Mailboxes ------------------------------------------------------
@@ -396,6 +470,16 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
+	// Per-mailbox quota check
+	const mailboxSettingsPath = path.join(process.cwd(), "data/storage", `mailboxes/${mailboxId}.json`);
+	let mailboxSettings: Record<string, unknown> = {};
+	try { mailboxSettings = JSON.parse(fs.readFileSync(mailboxSettingsPath, "utf8")); } catch { /* no settings */ }
+	const maxEmails = mailboxSettings.maxEmails ? Number(mailboxSettings.maxEmails) : 0;
+	if (maxEmails > 0 && stub.getStats().total >= maxEmails) {
+		console.log(`Quota exceeded for ${mailboxId}: ${stub.getStats().total}/${maxEmails} emails. Dropping incoming email.`);
+		return;
+	}
+
 	await stub.createEmail(Folders.INBOX, {
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
@@ -405,6 +489,36 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
+
+	// Telegram push notification
+	const tgToken = readSystemConfig().TG_BOT_TOKEN ?? env.TG_BOT_TOKEN;
+	const tgChatId = mailboxSettings.tgChatId as string | undefined;
+	if (tgToken && tgChatId) {
+		const subject = parsedEmail.subject || "(no subject)";
+		const sender = parsedEmail.from?.address || "unknown";
+		const text = `📧 New email for ${mailboxId}\nFrom: ${sender}\nSubject: ${subject}`;
+		ctx.waitUntil(
+			fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ chat_id: tgChatId, text }),
+			}).catch((e) => console.error("TG notify failed:", (e as Error).message))
+		);
+	}
+
+	// Email forwarding
+	const forwardTo = mailboxSettings.forwardTo as string | undefined;
+	if (forwardTo && env.SMTP_HOST) {
+		ctx.waitUntil(
+			sendEmail(env, {
+				to: forwardTo,
+				from: env.SMTP_FROM || `noreply@${(env.DOMAINS || "").split(",")[0]?.trim() || "localhost"}`,
+				subject: `Fwd: ${parsedEmail.subject || ""}`,
+				html: parsedEmail.html || parsedEmail.text || "",
+				text: parsedEmail.text || "",
+			}).catch((e) => console.error("Forward email failed:", (e as Error).message))
+		);
+	}
 
 	const agent = new EmailAgent(env, mailboxId);
 	ctx.waitUntil(

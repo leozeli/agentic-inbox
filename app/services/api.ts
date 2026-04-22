@@ -30,18 +30,24 @@ async function request<T>(
 		? AbortSignal.any([options.signal, controller.signal])
 		: controller.signal;
 
+	const appToken = typeof localStorage !== "undefined" ? localStorage.getItem("app_token") : null;
+
 	try {
 		const res = await fetch(url, {
 			...options,
 			signal,
 			headers: {
 				"Content-Type": "application/json",
-				...(options.headers as Record<string, string>),
+				...(appToken ? { Authorization: `Bearer ${appToken}` } : {}),
+				...(options.headers as Record<string, string>), // admin token overrides
 			},
 		});
 
 		if (!res.ok) {
 			const body = await res.json().catch(() => ({}));
+			if (res.status === 401 && !url.includes("/admin") && typeof window !== "undefined") {
+				window.dispatchEvent(new CustomEvent("app:auth-required"));
+			}
 			throw new ApiError(res.status, body as Record<string, unknown>);
 		}
 
@@ -160,6 +166,39 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Admin
+	getAdminStats: () => {
+		const token = typeof localStorage !== "undefined" ? localStorage.getItem("admin_token") : null;
+		return request<{
+			totalMailboxes: number;
+			totalEmails: number;
+			totalUnread: number;
+			mailboxes: Array<{ email: string; total: number; unread: number; inbox: number }>;
+		}>("/api/v1/admin/stats", { method: "GET", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+	},
+	getSystemConfig: () => {
+		const token = typeof localStorage !== "undefined" ? localStorage.getItem("admin_token") : null;
+		return request<{
+			smtpHost: string;
+			smtpPort: string;
+			smtpUser: string;
+			smtpFrom: string;
+			smtpPassSet: boolean;
+			domains: string;
+			openaiModel: string;
+			adminTokenSet: boolean;
+			tgBotTokenSet: boolean;
+		}>("/api/v1/admin/system", { method: "GET", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+	},
+	updateSystemConfig: (data: Record<string, string>) => {
+		const token = typeof localStorage !== "undefined" ? localStorage.getItem("admin_token") : null;
+		return request<{ ok: boolean }>("/api/v1/admin/system", {
+			method: "PUT",
+			body: JSON.stringify(data),
+			headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+		});
+	},
 };
 
 export default api;

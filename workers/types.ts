@@ -12,4 +12,7 @@ export interface Env {
 	SMTP_FROM?: string;
 	DOMAINS?: string;         // comma-separated, for email routing
 	EMAIL_ADDRESSES?: string[];
+	APP_PASSWORD?: string;    // protects all mailbox routes (optional)
+	ADMIN_TOKEN?: string;     // protects /api/v1/admin/* routes
+	TG_BOT_TOKEN?: string;    // Telegram Bot API token for push notifications
 }

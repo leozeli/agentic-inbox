@@ -5,6 +5,7 @@
 import {
 	Button,
 	Empty,
+	Input,
 	LinkProvider,
 	Loader,
 	Toasty,
@@ -12,7 +13,7 @@ import {
 } from "@cloudflare/kumo";
 import { WarningIcon } from "@phosphor-icons/react";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { forwardRef, useState } from "react";
+import { forwardRef, type FormEvent, useEffect, useState } from "react";
 import {
 	isRouteErrorResponse,
 	Links,
@@ -109,16 +110,65 @@ export function HydrateFallback() {
 	);
 }
 
+function AppLoginWall({ onLogin }: { onLogin: (token: string) => void }) {
+	const [input, setInput] = useState("");
+	const handleSubmit = (e: FormEvent) => {
+		e.preventDefault();
+		if (input.trim()) onLogin(input.trim());
+	};
+	return (
+		<div className="min-h-screen bg-kumo-recessed flex items-center justify-center p-4">
+			<div className="w-full max-w-sm space-y-6">
+				<div className="text-center">
+					<h1 className="text-xl font-bold text-kumo-default">Agentic Inbox</h1>
+					<p className="text-sm text-kumo-subtle mt-1">Enter your password to continue</p>
+				</div>
+				<form onSubmit={handleSubmit} className="rounded-xl border border-kumo-line bg-kumo-base p-6 space-y-4">
+					<Input
+						aria-label="Password"
+						type="password"
+						placeholder="Password…"
+						size="sm"
+						value={input}
+						onChange={(e) => setInput(e.target.value)}
+						autoFocus
+					/>
+					<Button type="submit" variant="primary" size="sm" className="w-full" disabled={!input.trim()}>
+						Sign in
+					</Button>
+				</form>
+			</div>
+		</div>
+	);
+}
+
 export default function App() {
 	// Use useState to ensure each SSR request gets a fresh client while the
 	// browser reuses the same singleton across navigations.
 	const [queryClient] = useState(getQueryClient);
+	const [showLoginWall, setShowLoginWall] = useState(false);
+
+	useEffect(() => {
+		const handler = () => {
+			localStorage.removeItem("app_token");
+			queryClient.clear();
+			setShowLoginWall(true);
+		};
+		window.addEventListener("app:auth-required", handler);
+		return () => window.removeEventListener("app:auth-required", handler);
+	}, [queryClient]);
+
+	const handleLogin = (token: string) => {
+		localStorage.setItem("app_token", token);
+		setShowLoginWall(false);
+	};
+
 	return (
 		<QueryClientProvider client={queryClient}>
 			<LinkProvider component={KumoLink}>
 				<TooltipProvider>
 					<Toasty>
-						<Outlet />
+						{showLoginWall ? <AppLoginWall onLogin={handleLogin} /> : <Outlet />}
 					</Toasty>
 				</TooltipProvider>
 			</LinkProvider>

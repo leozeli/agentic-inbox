@@ -20,12 +20,19 @@ export default function SettingsRoute() {
 
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
+	const [tgChatId, setTgChatId] = useState("");
+	const [forwardTo, setForwardTo] = useState("");
+	const [maxEmails, setMaxEmails] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+			setTgChatId((mailbox.settings as Record<string, unknown>)?.tgChatId as string || "");
+			setForwardTo((mailbox.settings as Record<string, unknown>)?.forwardTo as string || "");
+			const me = (mailbox.settings as Record<string, unknown>)?.maxEmails;
+			setMaxEmails(me ? String(me) : "");
 		}
 	}, [mailbox]);
 
@@ -36,6 +43,9 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
+			tgChatId: tgChatId.trim() || undefined,
+			forwardTo: forwardTo.trim() || undefined,
+			maxEmails: maxEmails ? Number(maxEmails) : undefined,
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -124,6 +134,48 @@ export default function SettingsRoute() {
 						The prompt is sent as the system message to the AI model.
 						It controls the agent's personality, writing style, and behavior rules.
 					</p>
+				</div>
+
+				{/* Notifications */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="text-sm font-medium text-kumo-default mb-4">Notifications</div>
+					<div className="space-y-3">
+						<div>
+							<Input
+								label="Telegram Chat ID"
+								placeholder="e.g. 123456789"
+								value={tgChatId}
+								onChange={(e) => setTgChatId(e.target.value)}
+							/>
+							<p className="text-xs text-kumo-subtle mt-1">
+								Forward new emails to a Telegram chat. Requires Bot Token set in Admin → System Configuration.
+							</p>
+						</div>
+						<div>
+							<Input
+								label="Forward to Email"
+								type="email"
+								placeholder="you@example.com"
+								value={forwardTo}
+								onChange={(e) => setForwardTo(e.target.value)}
+							/>
+							<p className="text-xs text-kumo-subtle mt-1">
+								Forward a copy of each incoming email to this address via SMTP.
+							</p>
+						</div>
+						<div>
+							<Input
+								label="Max Emails (quota)"
+								type="number"
+								placeholder="0 = unlimited"
+								value={maxEmails}
+								onChange={(e) => setMaxEmails(e.target.value)}
+							/>
+							<p className="text-xs text-kumo-subtle mt-1">
+								Stop storing new emails once this mailbox reaches the limit. 0 means unlimited.
+							</p>
+						</div>
+					</div>
 				</div>
 
 				{/* Save */}

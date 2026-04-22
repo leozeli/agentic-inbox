@@ -21,3 +21,4 @@ data/
 .playwright-mcp/
 frontend-check.png
 frontend.png
+*.png

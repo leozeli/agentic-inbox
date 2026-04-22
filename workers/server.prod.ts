@@ -28,6 +28,9 @@ const env: Env = {
 	SMTP_PASS: process.env.SMTP_PASS,
 	SMTP_FROM: process.env.SMTP_FROM,
 	DOMAINS: process.env.DOMAINS,
+	APP_PASSWORD: process.env.APP_PASSWORD,
+	ADMIN_TOKEN: process.env.ADMIN_TOKEN,
+	TG_BOT_TOKEN: process.env.TG_BOT_TOKEN,
 };
 
 const requestHandler = createRequestHandler(
@@ -40,7 +43,12 @@ const requestHandler = createRequestHandler(
 const server = new Hono();
 
 server.use("*", async (c, next) => {
-	Object.assign(c.env, env);
+	const runtimeEnv: Record<string, string> = { ...env } as Record<string, string>;
+	try {
+		const cfg = JSON.parse(readFileSync("data/system-config.json", "utf8"));
+		Object.assign(runtimeEnv, cfg);
+	} catch { /* no system-config.json yet */ }
+	Object.assign(c.env, runtimeEnv);
 	return next();
 });
 

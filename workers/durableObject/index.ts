@@ -213,6 +213,13 @@ export class MailboxDO {
 		return row?.total ?? 0;
 	}
 
+	getStats(): { total: number; unread: number; inbox: number } {
+		const total = (this.sqlite.prepare("SELECT COUNT(*) as n FROM emails").get() as { n: number } | undefined)?.n ?? 0;
+		const unread = (this.sqlite.prepare("SELECT COUNT(*) as n FROM emails WHERE read = 0").get() as { n: number } | undefined)?.n ?? 0;
+		const inbox = (this.sqlite.prepare("SELECT COUNT(*) as n FROM emails WHERE folder_id = (SELECT id FROM folders WHERE name = 'inbox' LIMIT 1)").get() as { n: number } | undefined)?.n ?? 0;
+		return { total, unread, inbox };
+	}
+
 	// ── Threaded queries (raw SQL — too complex for Drizzle's builder) ──
 
 	async getThreadedEmails(options: GetEmailsOptions = {}) {
