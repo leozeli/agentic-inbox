@@ -31,6 +31,7 @@ const env: Env = {
 	APP_PASSWORD: process.env.APP_PASSWORD,
 	ADMIN_TOKEN: process.env.ADMIN_TOKEN,
 	TG_BOT_TOKEN: process.env.TG_BOT_TOKEN,
+	INBOUND_SECRET: process.env.INBOUND_SECRET,
 };
 
 const requestHandler = createRequestHandler(
