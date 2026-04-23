@@ -214,7 +214,13 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!fs.existsSync(path.join(process.cwd(), "data/storage", key))) return c.json({ error: "Not found" }, 404);
-	await localStorageDelete(key); // TODO: also delete mailbox DB and attachment files
+	await localStorageDelete(key);
+	// Also delete the mailbox SQLite DB and WAL files
+	const dbBase = path.join(process.cwd(), "data", "mailboxes", mailboxId);
+	for (const ext of [".db", ".db-shm", ".db-wal"]) {
+		const f = dbBase + ext;
+		if (fs.existsSync(f)) fs.unlinkSync(f);
+	}
 	return c.body(null, 204);
 });
 
