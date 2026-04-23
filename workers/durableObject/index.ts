@@ -474,7 +474,7 @@ export class MailboxDO {
 		const emailIds = emailRows.map((e) => e.id as string);
 
 		// Batch-fetch all attachments for the thread in a single query
-		const placeholders = emailIds.map((_, i) => `?${i + 1}`).join(",");
+		const placeholders = emailIds.map(() => `?`).join(",");
 		const attachmentRows = this.sqlite.prepare(
 			`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
 		).all(...emailIds) as any[];
@@ -656,24 +656,18 @@ export class MailboxDO {
 		const prefix = tableAlias ? `${tableAlias}.` : "";
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
-		let paramIdx = 0;
-
 		const addParam = (value: string | number) => {
-			paramIdx++;
 			params.push(value);
-			return `?${paramIdx}`;
+			return `?`;
 		};
 
 		if (query) {
-			const p1 = addParam(`%${query}%`);
-			const p2 = addParam(`%${query}%`);
-			const p3 = addParam(`%${query}%`);
-			const p4 = addParam(`%${query}%`);
-			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
+			params.push(`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`);
+			conditions.push(`(${prefix}subject LIKE ? OR ${prefix}body LIKE ? OR ${prefix}sender LIKE ? OR ${prefix}recipient LIKE ? OR ${prefix}cc LIKE ? OR ${prefix}bcc LIKE ?)`);
 		}
 		if (folder) {
-			const p = addParam(folder);
-			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ${p} OR id = ${p} LIMIT 1)`);
+			params.push(folder, folder);
+			conditions.push(`${prefix}folder_id = (SELECT id FROM folders WHERE name = ? OR id = ? LIMIT 1)`);
 		}
 		if (from) { const p = addParam(`%${from}%`); conditions.push(`${prefix}sender LIKE ${p}`); }
 		if (to) { const p = addParam(`%${to}%`); conditions.push(`(${prefix}recipient LIKE ${p} OR ${prefix}cc LIKE ${p} OR ${prefix}bcc LIKE ${p})`); }
@@ -704,7 +698,7 @@ export class MailboxDO {
 			FROM emails e
 			LEFT JOIN folders f ON e.folder_id = f.id
 			${where}
-			ORDER BY e.date DESC LIMIT ?${params.length + 1} OFFSET ?${params.length + 2}`;
+			ORDER BY e.date DESC LIMIT ? OFFSET ?`;
 		params.push(limit, offset);
 
 		const result = this.sqlite.prepare(query).all(...params);
