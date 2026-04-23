@@ -194,13 +194,13 @@ export class MailboxDO {
 
 		if (folder) {
 			conditions.push(
-				"folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)",
-			);
-			params.push(folder);
+			"folder_id = (SELECT id FROM folders WHERE name = ? OR id = ? LIMIT 1)",
+		);
+		params.push(folder, folder);
 		}
 
 		if (thread_id) {
-			conditions.push(`thread_id = ?${params.length + 1}`);
+			conditions.push(`thread_id = ?`);
 			params.push(thread_id);
 		}
 
@@ -251,42 +251,42 @@ export class MailboxDO {
 		if (isDraftFolder) {
 			const rows = this.sqlite.prepare(
 				`WITH
-				folder_emails AS (
-					SELECT *,
-						COALESCE(in_reply_to, id) as draft_group_key
-					FROM emails
-					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-				),
-				draft_stats AS (
-					SELECT
-						draft_group_key,
-						COUNT(*) as thread_count,
-						SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
-						GROUP_CONCAT(DISTINCT sender) as participants
-					FROM folder_emails
-					GROUP BY draft_group_key
-				),
-				latest_per_group AS (
-					SELECT
-						fe.*,
-						ROW_NUMBER() OVER (
-							PARTITION BY fe.draft_group_key
-							ORDER BY fe.date DESC
-						) as rn
-					FROM folder_emails fe
-				)
+			folder_emails AS (
+				SELECT *,
+					COALESCE(in_reply_to, id) as draft_group_key
+				FROM emails
+				WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
+			),
+			draft_stats AS (
 				SELECT
-					lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
-					lp.read, lp.starred, lp.thread_id, lp.folder_id,
-					lp.in_reply_to, lp.email_references,
-					SUBSTR(lp.body, 1, 300) as snippet,
-					ds.thread_count, ds.thread_unread_count, ds.participants
-				FROM latest_per_group lp
-				JOIN draft_stats ds ON lp.draft_group_key = ds.draft_group_key
-				WHERE lp.rn = 1
-				ORDER BY lp.date DESC
-				LIMIT ?2 OFFSET ?3`,
-			).all(folder, limit, offset);
+					draft_group_key,
+					COUNT(*) as thread_count,
+					SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
+					GROUP_CONCAT(DISTINCT sender) as participants
+				FROM folder_emails
+				GROUP BY draft_group_key
+			),
+			latest_per_group AS (
+				SELECT
+					fe.*,
+					ROW_NUMBER() OVER (
+						PARTITION BY fe.draft_group_key
+						ORDER BY fe.date DESC
+					) as rn
+				FROM folder_emails fe
+			)
+			SELECT
+				lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
+				lp.read, lp.starred, lp.thread_id, lp.folder_id,
+				lp.in_reply_to, lp.email_references,
+				SUBSTR(lp.body, 1, 300) as snippet,
+				ds.thread_count, ds.thread_unread_count, ds.participants
+			FROM latest_per_group lp
+			JOIN draft_stats ds ON lp.draft_group_key = ds.draft_group_key
+			WHERE lp.rn = 1
+			ORDER BY lp.date DESC
+			LIMIT @limit OFFSET @offset`,
+			).all({ folder, limit, offset });
 			return rows.map((row: any) => ({
 				...row,
 				read: !!row.read,
@@ -305,9 +305,9 @@ export class MailboxDO {
 					COALESCE(thread_id, id) as raw_thread_id,
 					${NORMALIZED_SUBJECT_SQL} as normalized_subject
 				FROM emails
-				WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-			),
-			thread_to_conversation AS (
+			WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
+		),
+		thread_to_conversation AS (
 				SELECT
 					raw_thread_id,
 					normalized_subject,
@@ -337,8 +337,8 @@ export class MailboxDO {
 				FROM all_emails_with_conversation
 				WHERE conversation_id IN (
 					SELECT DISTINCT conversation_id FROM all_emails_with_conversation
-					WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-				)
+			WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
+					)
 				GROUP BY conversation_id
 			),
 			latest_message_per_conversation AS (
@@ -377,8 +377,8 @@ export class MailboxDO {
 				ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
 			WHERE lif.rn = 1
 			ORDER BY lif.date DESC
-			LIMIT ?2 OFFSET ?3`,
-		).all(folder, limit, offset);
+			LIMIT @limit OFFSET @offset`,
+		).all({ folder, limit, offset });
 		return rows.map((row: any) => ({
 			...row,
 			read: !!row.read,
@@ -400,10 +400,10 @@ export class MailboxDO {
 
 		if (isDraftFolder) {
 			const row = this.sqlite.prepare(
-				`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
-				 FROM emails
-				 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)`,
-			).get(folder) as { total: number } | undefined;
+			`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
+			 FROM emails
+			 WHERE folder_id = (SELECT id FROM folders WHERE name = ? OR id = ? LIMIT 1)`,
+		).get(folder, folder)as { total: number } | undefined;
 			return row?.total ?? 0;
 		}
 
@@ -415,9 +415,9 @@ export class MailboxDO {
 					thread_id,
 				${NORMALIZED_SUBJECT_SQL} as normalized_subject
 				FROM emails
-				WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
-			),
-			thread_to_conversation AS (
+			WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
+		),
+		thread_to_conversation AS (
 				SELECT
 					raw_thread_id,
 					CASE
@@ -466,7 +466,7 @@ export class MailboxDO {
 	 */
 	async getThreadEmails(threadId: string) {
 		const emailRows = this.sqlite.prepare(
-			`SELECT * FROM emails WHERE thread_id = ?1 ORDER BY date ASC`,
+			`SELECT * FROM emails WHERE thread_id = ? ORDER BY date ASC`,
 		).all(threadId) as any[];
 
 		if (emailRows.length === 0) return [];
@@ -785,9 +785,9 @@ export class MailboxDO {
 	 */
 	async checkSendRateLimit(): Promise<string | null> {
 		const hourRow = this.sqlite.prepare(
-			`SELECT COUNT(*) as cnt FROM emails
-			 WHERE folder_id = ?1
-			   AND date >= datetime('now', '-1 hour')`,
+		`SELECT COUNT(*) as cnt FROM emails
+		 WHERE folder_id = ?
+		   AND date >= datetime('now', '-1 hour')`,
 		).get(Folders.SENT) as { cnt: number } | undefined;
 
 		if ((hourRow?.cnt ?? 0) >= 20) {
@@ -796,8 +796,8 @@ export class MailboxDO {
 
 		const dayRow = this.sqlite.prepare(
 			`SELECT COUNT(*) as cnt FROM emails
-			 WHERE folder_id = ?1
-			   AND date >= datetime('now', '-1 day')`,
+		 WHERE folder_id = ?
+		   AND date >= datetime('now', '-1 day')`,
 		).get(Folders.SENT) as { cnt: number } | undefined;
 
 		if ((dayRow?.cnt ?? 0) >= 100) {

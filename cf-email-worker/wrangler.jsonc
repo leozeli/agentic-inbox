@@ -3,7 +3,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-11-28",
   "compatibility_flags": ["nodejs_compat"],
+  "account_id": "0f2669c32cf489b79e5edc038a350207",
   "vars": {
-    "VPS_URL": "https://your-vps-domain.com"
+    "VPS_URL": "https://inbox.c9c.top"
   }
 }
