@@ -409,28 +409,28 @@ export class MailboxDO {
 
 		const row = this.sqlite.prepare(
 			`WITH
-			folder_emails AS (
-				SELECT
-					COALESCE(thread_id, id) as raw_thread_id,
-					thread_id,
-				${NORMALIZED_SUBJECT_SQL} as normalized_subject
-				FROM emails
-			WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
-		),
-		thread_to_conversation AS (
-				SELECT
-					raw_thread_id,
-					CASE
-						WHEN thread_id IS NOT NULL THEN raw_thread_id
-						WHEN normalized_subject != '' THEN MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
-						ELSE raw_thread_id
-					END as conversation_id
-				FROM folder_emails
-				GROUP BY raw_thread_id, normalized_subject, thread_id
-			)
-			SELECT COUNT(DISTINCT conversation_id) as total
-			FROM thread_to_conversation`,
-		).get(folder) as { total: number } | undefined;
+		folder_emails AS (
+			SELECT
+				COALESCE(thread_id, id) as raw_thread_id,
+				thread_id,
+			${NORMALIZED_SUBJECT_SQL} as normalized_subject
+			FROM emails
+		WHERE folder_id = (SELECT id FROM folders WHERE name = @folder OR id = @folder LIMIT 1)
+	),
+	thread_to_conversation AS (
+			SELECT
+				raw_thread_id,
+				CASE
+					WHEN thread_id IS NOT NULL THEN raw_thread_id
+					WHEN normalized_subject != '' THEN MIN(raw_thread_id) OVER (PARTITION BY normalized_subject)
+					ELSE raw_thread_id
+				END as conversation_id
+			FROM folder_emails
+			GROUP BY raw_thread_id, normalized_subject, thread_id
+		)
+		SELECT COUNT(DISTINCT conversation_id) as total
+		FROM thread_to_conversation`,
+		).get({ folder }) as { total: number } | undefined;
 		return row?.total ?? 0;
 	}
 
