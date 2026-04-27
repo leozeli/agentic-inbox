@@ -3,8 +3,6 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 export interface Env {
-	OPENAI_API_KEY: string;
-	OPENAI_MODEL?: string;
 	SMTP_HOST?: string;       // for sending email
 	SMTP_PORT?: string;
 	SMTP_USER?: string;

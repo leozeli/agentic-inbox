@@ -186,7 +186,6 @@ const api = {
 			smtpFrom: string;
 			smtpPassSet: boolean;
 			domains: string;
-			openaiModel: string;
 			adminTokenSet: boolean;
 			tgBotTokenSet: boolean;
 		}>("/api/v1/admin/system", { method: "GET", headers: token ? { Authorization: `Bearer ${token}` } : {} });

@@ -16,12 +16,9 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { app as apiApp, receiveEmail } from "./index";
 import { handleMcpRequest } from "./mcp";
-import { EmailAgent } from "./agent";
 import type { Env } from "./types";
 
 const env: Env = {
-	OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
-	OPENAI_MODEL: process.env.OPENAI_MODEL,
 	SMTP_HOST: process.env.SMTP_HOST,
 	SMTP_PORT: process.env.SMTP_PORT,
 	SMTP_USER: process.env.SMTP_USER,
@@ -59,24 +56,6 @@ server.use("/favicon.ico", serveStatic({ root: "./build/client" }));
 
 server.all("/mcp", (c) => handleMcpRequest(c.env as Env, c.req.raw));
 server.all("/mcp/*", (c) => handleMcpRequest(c.env as Env, c.req.raw));
-
-server.post("/api/agents/:mailboxId/chat", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const agent = new EmailAgent(c.env as Env, mailboxId);
-	const body = await c.req.json();
-	return agent.onChatMessage(body.messages ?? []);
-});
-server.get("/api/agents/:mailboxId/messages", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const agent = new EmailAgent(c.env as Env, mailboxId);
-	return c.json(agent.messages);
-});
-server.delete("/api/agents/:mailboxId/messages", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const agent = new EmailAgent(c.env as Env, mailboxId);
-	await agent.persistMessages([]);
-	return c.json({ ok: true });
-});
 
 // Inbound email webhook — called by Cloudflare Email Routing Worker
 // Expects: Authorization: Bearer <INBOUND_SECRET>

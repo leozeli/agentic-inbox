@@ -33,10 +33,6 @@ interface UIState {
 	closeSidebar: () => void;
 	toggleSidebar: () => void;
 
-	// Agent panel
-	isAgentPanelOpen: boolean;
-	toggleAgentPanel: () => void;
-
 	// Legacy dialog support (kept for non-split views)
 	isComposeModalOpen: boolean;
 	openComposeModal: (options?: ComposeOptions) => void;
@@ -50,8 +46,6 @@ export const useUIStore = create<UIState>((set, get) => ({
 	composeOptions: { mode: "new", originalEmail: null },
 	isComposeModalOpen: false,
 	isSidebarOpen: false,
-	isAgentPanelOpen: true,
-
 	selectEmail: (id) => set({ selectedEmailId: id, isComposing: false }),
 
 	startCompose: (options) =>
@@ -81,8 +75,6 @@ export const useUIStore = create<UIState>((set, get) => ({
 	openSidebar: () => set({ isSidebarOpen: true }),
 	closeSidebar: () => set({ isSidebarOpen: false }),
 	toggleSidebar: () => set({ isSidebarOpen: !get().isSidebarOpen }),
-
-	toggleAgentPanel: () => set({ isAgentPanelOpen: !get().isAgentPanelOpen }),
 
 	openComposeModal: (options) =>
 		set({

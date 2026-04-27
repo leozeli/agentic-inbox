@@ -9,7 +9,6 @@ import { z } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, localStoragePut, localStorageGet, localStorageDelete, type StoredAttachment } from "./lib/attachments";
 import { MailboxDO } from "./durableObject";
-import { EmailAgent } from "./agent";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -146,7 +145,6 @@ app.get("/api/v1/admin/system", (c) => {
 		smtpFrom: cfg.SMTP_FROM ?? c.env.SMTP_FROM ?? "",
 		smtpPassSet: !!(cfg.SMTP_PASS ?? c.env.SMTP_PASS),
 		domains: cfg.DOMAINS ?? c.env.DOMAINS ?? "",
-		openaiModel: cfg.OPENAI_MODEL ?? c.env.OPENAI_MODEL ?? "gpt-4o-mini",
 		appPasswordSet: !!(cfg.APP_PASSWORD ?? c.env.APP_PASSWORD),
 		adminTokenSet: !!(cfg.ADMIN_TOKEN ?? c.env.ADMIN_TOKEN),
 		tgBotTokenSet: !!(cfg.TG_BOT_TOKEN ?? c.env.TG_BOT_TOKEN),
@@ -159,7 +157,7 @@ app.put("/api/v1/admin/system", async (c) => {
 	const map: Record<string, string> = {
 		smtpHost: "SMTP_HOST", smtpPort: "SMTP_PORT", smtpUser: "SMTP_USER",
 		smtpFrom: "SMTP_FROM", smtpPass: "SMTP_PASS", domains: "DOMAINS",
-		openaiModel: "OPENAI_MODEL", appPassword: "APP_PASSWORD", adminToken: "ADMIN_TOKEN", tgBotToken: "TG_BOT_TOKEN",
+		appPassword: "APP_PASSWORD", adminToken: "ADMIN_TOKEN", tgBotToken: "TG_BOT_TOKEN",
 	};
 	for (const [k, envKey] of Object.entries(map)) {
 		if (body[k] !== undefined && body[k] !== "") cfg[envKey] = body[k];
@@ -526,11 +524,6 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		);
 	}
 
-	const agent = new EmailAgent(env, mailboxId);
-	ctx.waitUntil(
-		agent.handleNewEmail({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId })
-			.catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message))
-	);
 }
 
 export { app, receiveEmail };

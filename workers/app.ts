@@ -9,7 +9,6 @@ import { handleMcpRequest } from "./mcp";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
-export { EmailAgent } from "./agent";
 
 declare module "react-router" {
 	export interface AppLoadContext {
@@ -29,32 +28,6 @@ const app = new Hono<{ Bindings: Env }>();
 // Stateless per-request handler, no Cloudflare bindings required.
 app.all("/mcp", async (c) => handleMcpRequest(c.env, c.req.raw));
 app.all("/mcp/*", async (c) => handleMcpRequest(c.env, c.req.raw));
-
-// Agent chat endpoint — replaces WebSocket-based AIChatAgent
-app.post("/api/agents/:mailboxId/chat", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const { EmailAgent } = await import("./agent");
-	const agent = new EmailAgent(c.env, mailboxId);
-	const body = await c.req.json();
-	return agent.onChatMessage(body.messages ?? []);
-});
-
-// Get agent message history
-app.get("/api/agents/:mailboxId/messages", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const { EmailAgent } = await import("./agent");
-	const agent = new EmailAgent(c.env, mailboxId);
-	return c.json(agent.messages);
-});
-
-// Clear agent message history
-app.delete("/api/agents/:mailboxId/messages", async (c) => {
-	const mailboxId = decodeURIComponent(c.req.param("mailboxId"));
-	const { EmailAgent } = await import("./agent");
-	const agent = new EmailAgent(c.env, mailboxId);
-	await agent.persistMessages([]);
-	return c.json({ ok: true });
-});
 
 // Mount the API routes
 app.route("/", apiApp);

@@ -102,7 +102,6 @@ export default function AdminRoute() {
 	const [smtpUser, setSmtpUser] = useState("");
 	const [smtpPass, setSmtpPass] = useState("");
 	const [smtpFrom, setSmtpFrom] = useState("");
-	const [openaiModel, setOpenaiModel] = useState("");
 	const [appPassword, setAppPassword] = useState("");
 	const [adminToken, setAdminToken] = useState("");
 	const [tgBotToken, setTgBotToken] = useState("");
@@ -114,14 +113,13 @@ export default function AdminRoute() {
 		setSmtpPort(system.smtpPort ?? "");
 		setSmtpUser(system.smtpUser ?? "");
 		setSmtpFrom(system.smtpFrom ?? "");
-		setOpenaiModel(system.openaiModel ?? "");
 		setFormInitialized(true);
 	}
 
 	const handleSaveSystem = (e: FormEvent) => {
 		e.preventDefault();
 		const data: Record<string, string> = {
-			domains, smtpHost, smtpPort, smtpUser, smtpFrom, openaiModel,
+			domains, smtpHost, smtpPort, smtpUser, smtpFrom,
 		};
 		if (smtpPass) data.smtpPass = smtpPass;
 		if (appPassword) data.appPassword = appPassword;
@@ -290,11 +288,6 @@ export default function AdminRoute() {
 							<div>
 								<label className="text-sm font-medium text-kumo-default block mb-1.5">From Address</label>
 								<Input aria-label="From Address" placeholder="noreply@example.com" size="sm" value={smtpFrom} onChange={(e) => setSmtpFrom(e.target.value)} />
-							</div>
-
-							<div>
-								<label className="text-sm font-medium text-kumo-default block mb-1.5">OpenAI Model</label>
-								<Input aria-label="OpenAI Model" placeholder="gpt-4o-mini" size="sm" value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)} />
 							</div>
 
 							<div className="border-t border-kumo-line pt-4 space-y-4">

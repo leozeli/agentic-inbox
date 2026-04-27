@@ -22,8 +22,6 @@ import { handleMcpRequest } from "./mcp";
 import type { Env } from "./types";
 
 const env: Env = {
-	OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
-	OPENAI_MODEL: process.env.OPENAI_MODEL,
 	SMTP_HOST: process.env.SMTP_HOST,
 	SMTP_PORT: process.env.SMTP_PORT,
 	SMTP_USER: process.env.SMTP_USER,
