@@ -96,9 +96,9 @@ The agent has access to these tools during a conversation:
 
 ### Auto-Draft on New Email
 
-When a new email arrives, the system automatically instantiates an `EmailAgent` for the recipient mailbox and calls `handleNewEmail`. The agent reads the thread history and creates a draft reply without any human prompt. This is the default "inbox assistant" behavior.
+When a new email arrives (via the `/api/inbound-email` webhook), the system automatically instantiates an `EmailAgent` for the recipient mailbox and calls `handleNewEmail`. The agent reads the thread history and creates a draft reply without any human prompt.
 
-To disable or customize this, adjust the system prompt in the mailbox settings (see below).
+To disable or customize this behavior, adjust the system prompt in the mailbox settings (see below).
 
 ---
 
@@ -218,6 +218,23 @@ In Cursor Settings → MCP → Add Server:
 
 ---
 
+## Inbound Email Webhook
+
+To trigger the auto-draft agent on new email, POST raw MIME bytes to:
+
+```
+POST /api/inbound-email
+Authorization: Bearer <INBOUND_SECRET>
+Content-Type: application/octet-stream
+Body: raw MIME email bytes
+```
+
+The server parses the recipient address, routes the email to the correct mailbox, stores it, and fires the `EmailAgent` to generate a draft reply. If `INBOUND_SECRET` is not configured, the endpoint accepts unauthenticated requests.
+
+See [`cf-email-worker/`](../cf-email-worker/) for a Cloudflare Email Routing Worker that forwards inbound mail to this endpoint.
+
+---
+
 ## Folder Reference
 
 | Folder ID | Description |
@@ -234,9 +251,19 @@ Custom folders created in the UI use UUIDs as IDs. Call `list_emails` on `inbox`
 
 ## Configuration
 
-The AI model is configured via environment variables or Admin panel → System Config:
+All settings are provided via environment variables (`.env` file) or overridden at runtime via the Admin panel → System Config.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_API_KEY` | required | Your OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model name (e.g. `gpt-4o`, `gpt-4-turbo`) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `OPENAI_API_KEY` | yes | — | Your OpenAI API key |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | Model name (e.g. `gpt-4o`, `gpt-4-turbo`) |
+| `SMTP_HOST` | yes (send) | — | SMTP server hostname |
+| `SMTP_PORT` | no | `587` | SMTP port |
+| `SMTP_USER` | no | — | SMTP username |
+| `SMTP_PASS` | no | — | SMTP password |
+| `SMTP_FROM` | no | — | Default sender address |
+| `DOMAINS` | no | — | Comma-separated domains for email routing |
+| `APP_PASSWORD` | no | — | Password protecting all mailbox routes |
+| `ADMIN_TOKEN` | no | — | Token protecting `/api/v1/admin/*` routes |
+| `INBOUND_SECRET` | no | — | Shared secret for `/api/inbound-email` webhook |
+| `TG_BOT_TOKEN` | no | — | Telegram Bot token for push notifications |
